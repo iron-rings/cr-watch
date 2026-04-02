@@ -2,76 +2,113 @@
 
 Claude CodeでPR作成後、CodeRabbitのレビュー完了を自動検知してデスクトップ通知を送るツールです。
 
-## 概要
+## これは何？
 
-cr-watchは以下の流れで動作します：
+普段の開発フローで起きる問題：
 
-1. Claude CodeでPRを作成（`gh pr create`実行）
-2. インストール済みのhookが自動発火
-3. 定期的にCodeRabbitのレビュー状態をチェック（2分おき、最大10分）
-4. CodeRabbitのレビューが完了したら自動検知
-5. デスクトップ通知を送信
-6. ユーザーが `/cr-fix` を手動実行
+1. Claude Codeで作業 → PRを作成
+2. CodeRabbitが自動レビュー開始（数分かかる）
+3. **いつ終わったかわからない** ← ここが問題
+4. 手動でGitHubを見に行く or 放置して忘れる
+
+cr-watchはこの問題を解決します：
 
 ```
-gh pr create → hook自動発火 → 2分おきにチェック(最大10分) → CodeRabbit完了 → デスクトップ通知 → /cr-fix を手動実行
+PR作成 → 自動でポーリング開始 → CodeRabbit完了 → デスクトップ通知！ → /cr-fix で対応
+```
+
+**インストール後は何もしなくてOK。** PRを作るだけで自動的に監視が始まります。
+
+## クイックスタート
+
+```bash
+# 1. クローン
+git clone https://github.com/iron-rings/cr-watch.git
+
+# 2. インストール
+cd cr-watch && ./install.sh
+
+# 3. 動作確認（macOSの場合）
+osascript -e 'display notification "cr-watchテスト" with title "cr-watch" sound name "Glass"'
+# → 右上に通知が出ればOK
+```
+
+Windows（PowerShell）の場合：
+```powershell
+git clone https://github.com/iron-rings/cr-watch.git
+cd cr-watch; .\install.ps1
 ```
 
 ## 前提条件
 
-- **gh CLI** — 認証済みの状態（`gh auth status` で確認可能）
-- **Claude Code** — インストール済み
-- **jq** — Bash版のみ必要（`jq --version` で確認可能）
-  - macOS: `brew install jq`
-  - Ubuntu/Debian: `sudo apt install jq`
-  - WSL: `apt install jq`
-
-## インストール
-
-### macOS / Linux / Git Bash / WSL
-
-```bash
-cd cr-watch
-./install.sh
-```
-
-### PowerShell (Windows)
-
-```powershell
-cd cr-watch
-.\install.ps1
-```
-
-インストール後、Claude Codeを再起動して設定を反映させてください。
+| 必要なもの | 確認方法 | 備考 |
+|-----------|---------|------|
+| Claude Code | — | インストール済みであること |
+| gh CLI（認証済み） | `gh auth status` | 未認証なら `gh auth login` |
+| jq | `jq --version` | Bash版のみ必要。PowerShell版は不要 |
+| CodeRabbit | GitHubでPRにレビューが来るか | リポジトリにCodeRabbitが接続済みであること |
 
 ## 仕組み
 
-### フロー
+### 全体フロー
 
 ```
-gh pr create
+あなたがClaude Codeで作業
     ↓
-cr-watch-launcher.sh（PostToolUse hookで自動発火）
+gh pr create（Claude Codeが実行）
     ↓
-cr-watch.sh（バックグラウンドで起動）
+cr-watch-launcher.sh が自動発火（PostToolUse hook）
+  └→ PRのURLからPR番号を抽出
     ↓
-2分ごとにCodeRabbitのレビュー状態をチェック（最大5回 = 10分）
+cr-watch.sh がバックグラウンドで起動
+  └→ 2分おきに gh pr view でCodeRabbitのレビュー状態をチェック
+  └→ 最大5回（10分間）
     ↓
-レビュー完了を検知（APPROVED or CHANGES_REQUESTED）
+CodeRabbitのレビュー完了を検知（APPROVED or CHANGES_REQUESTED）
     ↓
-デスクトップ通知（macOS: osascript / Windows: WScript.Shell / Linux: notify-send）
+デスクトップ通知「CodeRabbit完了 — cr-fix を実行してください」
+    ↓
+あなたがClaude Codeで /cr-fix を実行
+  └→ CodeRabbitの指摘を自動取得・分類・修正
 ```
 
-### コンポーネント
+### `/cr-fix` とは？
 
-- **cr-watch.sh / cr-watch.ps1** — CodeRabbitのレビュー状態をポーリングし、完了時にデスクトップ通知
-- **cr-watch-launcher.sh / cr-watch-launcher.ps1** — `gh pr create` 実行を検知してwatcherをバックグラウンド起動
-- **install.sh / install.ps1** — hookファイルを `~/.claude/hooks/` にコピーし、settings.jsonにhook登録
-- **uninstall.sh / uninstall.ps1** — hookファイル削除とsettings.jsonからのhook解除
+通知が来たらClaude Codeで実行するコマンドです：
+
+```
+/cr-fix <PR番号>
+```
+
+CodeRabbitの未解決コメントを取得し、自動で修正コードを適用します。
+（Claude Codeの `cr-fix` スキルが必要です）
+
+### ファイル構成
+
+```
+~/.claude/hooks/          ← インストール先
+├── cr-watch.sh           ← 監視スクリプト（Bash）
+├── cr-watch.ps1          ← 監視スクリプト（PowerShell）
+├── cr-watch-launcher.sh  ← hook起動（Bash）
+└── cr-watch-launcher.ps1 ← hook起動（PowerShell）
+
+~/.claude/settings.json   ← PostToolUse hookが自動登録される
+```
+
+### 対応環境
+
+| 環境 | 通知方法 |
+|------|---------|
+| macOS | osascript（システム通知） |
+| Windows（PowerShell） | WScript.Shell Popup |
+| Windows（Git Bash） | powershell.exe 経由 |
+| WSL | powershell.exe 経由 |
+| Linux（デスクトップ） | notify-send |
+| Linux（サーバー/SSH） | 通知なし（サイレント終了） |
 
 ## 設定
 
-ポーリング動作は環境変数で調整可能です：
+環境変数でポーリング動作を調整できます：
 
 | 環境変数 | デフォルト | 説明 |
 |---------|-----------|------|
@@ -85,43 +122,60 @@ export CR_WATCH_INTERVAL=30
 export CR_WATCH_MAX_CHECKS=20
 ```
 
-## アンインストール
+## 動作確認
 
-### macOS / Linux / Git Bash / WSL
+### 通知テスト
 
 ```bash
-cd cr-watch
-./uninstall.sh
+# macOS
+osascript -e 'display notification "テスト" with title "cr-watch" sound name "Glass"'
+
+# Windows (PowerShell)
+[void](New-Object -ComObject WScript.Shell).Popup("テスト", 5, "cr-watch", 64)
 ```
 
-### PowerShell (Windows)
+### hookテスト（PRを作らずに確認）
 
-```powershell
-cd cr-watch
-.\uninstall.ps1
+```bash
+# モック入力でlauncherを実行
+echo '{"tool_input":{"command":"gh pr create --title test"},"tool_result":"https://github.com/owner/repo/pull/999"}' | ~/.claude/hooks/cr-watch-launcher.sh
+
+# プロセスが起動したか確認
+ps aux | grep "cr-watch.*999" | grep -v grep
+
+# テストプロセスを停止
+kill $(cat /tmp/cr-watch-999.pid) 2>/dev/null; rm -f /tmp/cr-watch-999.pid
 ```
+
+## アンインストール
+
+```bash
+# macOS / Linux / Git Bash / WSL
+cd cr-watch && ./uninstall.sh
+
+# PowerShell (Windows)
+cd cr-watch; .\uninstall.ps1
+```
+
+hookファイルの削除と settings.json からのhook解除を行います。
 
 ## トラブルシューティング
 
-### ghコマンドが見つからない、または認証されていない
+### 通知が来ない
+
+1. **CodeRabbitが接続されているか確認**: GitHubでPRにCodeRabbitのレビューが来ているか
+2. **hookが登録されているか確認**: `cat ~/.claude/settings.json | grep cr-watch`
+3. **hookファイルが存在するか確認**: `ls ~/.claude/hooks/cr-watch*`
+4. **OS通知設定**: macOSはシステム設定→通知、Windowsは通知センターを確認
+
+### ghの認証エラー
 
 ```bash
-gh auth status
+gh auth status   # 状態確認
+gh auth login    # 再認証
 ```
 
-状態確認後、必要に応じて再認証：
-
-```bash
-gh auth login
-```
-
-### jqコマンドが見つからない（Bash版）
-
-```bash
-jq --version
-```
-
-バージョン表示がない場合はインストール：
+### jqが見つからない
 
 ```bash
 # macOS
@@ -129,22 +183,4 @@ brew install jq
 
 # Ubuntu / Debian
 sudo apt install jq
-```
-
-### デスクトップ通知が表示されない
-
-#### macOS
-
-システム環境設定 → 通知 → ターミナル（またはClaude Code）が「通知を許可」に設定されているか確認してください。
-
-#### Windows（PowerShell）
-
-Windows設定 → システム → 通知とアクション → 通知 が有効に設定されているか確認してください。
-
-#### WSL
-
-`powershell.exe` 経由で通知を送ります。以下で確認：
-
-```bash
-which powershell.exe
 ```
